@@ -1,0 +1,69 @@
+pipeline {
+    environment {
+        DEPLOY="sample-nodejs"
+        KS8_NAMESPACE="testing"
+        PROJECT ="marwennee/back-service-1.git"
+        REGISTRY = "marwenguesmii/nodejsapp"
+        KS8_CONFIG_NAME = "kubeconfig"
+        GIT_CRED = "github"
+    }
+    agent {
+        kubernetes {
+            yaml '''
+                spec:
+                    containers:
+                        - name: kaniko
+                          image: gcr.io/kaniko-project/executor:debug
+                          imagePullPolicy: Always
+                          command:
+                          - sleep
+                          args:
+                          - 9999999
+                          volumeMounts:
+                          - name: jenkins-docker-cfg
+                            mountPath: /kaniko/.docker
+                    volumes:
+                    - name: jenkins-docker-cfg
+                      projected:
+                        sources:
+                        - secret:
+                            name: docker-credentials
+                            items:
+                                - key: .dockerconfigjson
+                                  path: config.json
+                '''
+        }
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout([$class: 'GitSCM',
+                branches: [[name: '*/main']],
+                doGenerateSubmoduleConfigurations: false,
+                extensions: [[$class: 'CheckoutOption', timeout: 23], [$class: 'CloneOption', noTags: true, reference: '', shallow: false, timeout: 90]] ,
+                submoduleCfg: [],
+                userRemoteConfigs: [[credentialsId: '$GIT_CRED',
+                url: "https://www.github.com/$PROJECT"]]])
+            }
+        }
+
+        stage('Docker Build & Publish') {
+            steps {
+                container(name: 'kaniko', shell: '/busybox/sh') {
+                    sh '''#!/busybox/sh
+                        /kaniko/executor --context `pwd` --destination $REGISTRY
+                    '''
+                }
+            }
+        }
+        stage('Kubernetes Deploy') {
+            steps {
+                withKubeConfig([credentialsId: "$KS8_CONFIG_NAME"]) {
+                    sh 'curl -LO "https://storage.googleapis.com/kubernetes-release/release/v1.20.7/bin/linux/amd64/kubectl"'  
+                    sh 'chmod u+x ./kubectl'  
+                    sh "./kubectl -n $KS8_NAMESPACE rollout restart deployment/$DEPLOY"
+                } 
+            }        
+        }
+}
+}
